@@ -1,68 +1,80 @@
-# Part 1 — Reuse Your MAC to Build a Hardware Neuron and Tiny Neural Network
+# Part 1 — Reuse Your MAC to Build a Hardware Neuron
 
-**Digital Logic II | FPGA Cloud AI Acceleration | Individual work**  
-**Time:** 4–6 hours  
-**Tools:** Questa/ModelSim (or compatible SystemVerilog simulator), Quartus Prime Lite  
-**Compilation target:** DE10-Lite MAX 10 (`10M50DAF484C7G`), 50 MHz clock (20 ns)
+**Digital Logic II · Individual assignment · Estimated time: 4–6 hours**  
+**Tools:** Questa/ModelSim (or another SystemVerilog simulator) and Quartus Prime Lite  
+**Target:** DE10-Lite MAX 10 (`10M50DAF484C7G`), 50 MHz clock (20 ns)
 
-**Scope:** Part 1 requires simulation and Quartus compilation, **not physical FPGA programming**. In Part 2, you will use the FPGA Cloud client to run ResNet-50 on a **separate, prebuilt Agilex 7 accelerator** and study throughput, latency, batching, and concurrent inference requests. Your neuron RTL does **not** run ResNet-50.
+In Assignment 2, you built a **multiply-accumulate (MAC)** unit. In this assignment, you will **reuse your MAC inside a neuron**, then connect three neurons into a small **2–2–1 neural network**. You will learn how arithmetic, registers, memories, and a controller work together to implement a neural network in hardware.
 
-## Overview and learning goals
+**Scope:** Simulate and compile the design; **do not program a physical FPGA**. Part 2 is separate: you will use the FPGA Cloud client to run ResNet-50 on a **prebuilt Agilex 7 accelerator**. Your Part 1 neuron is not the accelerator running ResNet-50.
 
-In Assignment 2, you developed a parameterized **multiply-accumulate (MAC)** unit. Now you will reuse it to construct a neuron, then connect **three neurons** into a **2–2–1 network** (two hidden neurons and one output neuron). You will practice module reuse, signed fixed-point arithmetic, synchronous control, memory access, inter-module handshaking, verification, and FPGA timing/resource analysis.
+## 1. Understand the provided design
 
-![Hardware neuron architecture](docs/Neuron_Hardware_Architecture.png)
+![Conceptual hardware neuron architecture](docs/Neuron_Hardware_Architecture.png)
 
-**Datapath:** weight ROM → time-shared MAC → bias addition → sigmoid lookup-table ROM. A finite-state machine (FSM) sequences the two inputs to each neuron. The diagram illustrates the architecture; the student design uses a clocked weight ROM and sigmoid ROM.
+A neuron performs three steps:
 
-**What you should learn:** an arithmetic module can be reused without changing its interface; binary values represent signed fixed-point quantities; registers and memory reads determine when results become valid; a network layer cannot consume data before the preceding layer finishes; and synthesis/timing reports describe an implementation, not proof of hardware execution.
+1. **MAC:** Multiply each input by its weight and accumulate the products.
+2. **Bias:** Add a constant to the MAC result.
+3. **Activation:** Use a sigmoid lookup table (ROM) to obtain the output.
 
-## 1. Starter files and required work
+The neuron equation is:
 
-| Files | Required action |
-|---|---|
-| **`mac_core.sv` (not included)** | Import **your own Assignment 2 MAC**; complete **TODO 1** (signed mode without breaking unsigned mode) |
-| `Neuron.v` | Complete **TODO 2A–2D** (MAC connections), **TODO 3** (bias), **TODO 4** (sigmoid index) |
-| `Tiny_NN.v` | Complete **TODO 5A–5C** (output neuron connections) |
-| `Weight_Memory.v`, `Sig_ROM.v`, `sigContent.mem`, `weights/*.mem`, `include.v` | Provided memory, sigmoid table, weights, and parameters; **do not edit** |
-| `tb/tb_mac_reuse.sv` | Verify old unsigned and new signed MAC modes; add one signed edge case |
-| `tb/tb_neuron.v` | Run checks; add **two** self-checking cases, including a negative input |
-| `tb/tb_tiny_nn.v` | Run checks; add **two** self-checking cases **and a reset-during-operation test** |
-| `Neuron.qpf`, `Neuron.qsf`, `Neuron.sdc` | Supplied Quartus project and 20 ns timing constraint |
-| `MAC_IMPORT_INSTRUCTIONS.txt`, `ReLU.v` | Import guidance; optional ReLU reference (**sigmoid is required**) |
+$$
+y = \sigma(x_0 w_0 + x_1 w_1 + b)
+$$
 
-The starter is deliberately incomplete. It will not elaborate without your MAC and will not pass all tests until the TODOs are finished. Do not hard-code outputs or submit a placeholder MAC.
+For example, inputs `1.0` and `0.5`, weights `1.0` and `−1.0`, and bias `0.25` give a weighted sum of `0.75`. The provided sigmoid table returns approximately **0.6875**.
 
-## 2. Reuse and extend the MAC (TODO 1)
+### What is already implemented for you?
 
-Copy your **own** `mac_core.sv` from Assignment 2 beside `Neuron.v`, retaining an unchanged backup of the original. Preserve the original ports and the two parameters `W=8` and `ACC_W=32`; add an integer parameter **`SIGNED_MODE` with default `0`**.
+| Provided component | What it does | Why we use it |
+|---|---|---|
+| **Weight memory** (`Weight_Memory.v`) | Stores two weights and reads one per clock. | Weights are needed for each multiplication. |
+| **Neuron controller** (`Neuron.v`) | An FSM sequences input capture, weight reads, MAC steps, bias, and activation. | A single MAC is reused across two inputs, so operations must happen in order. |
+| **Bias calculation** (`Neuron.v`) | Adjusts the bias to match the MAC's number format, then adds it **once**. | The MAC products and stored bias use different fixed-point scales. |
+| **Sigmoid ROM** (`Sig_ROM.v`, `sigContent.mem`) | Looks up an approximate activation output. Address scaling and range limiting are provided. | Reading a table is simpler than building an exponential-function circuit. |
+| **Network controller** (`Tiny_NN.v`) | Waits until the two hidden neurons finish before starting the output neuron. | Later layers must wait for valid results from earlier layers. |
 
-```systemverilog
-module mac_core #(
-    parameter integer W = 8,
-    parameter integer ACC_W = 32
-    // TODO 1: add the SIGNED_MODE parameter (default 0)
-)(
-    input wire clk, reset, enable,
-    input wire [W-1:0] a, b,
-    output logic [ACC_W-1:0] accumulator
-);
-    // Keep and extend YOUR existing MAC implementation.
-endmodule
-```
+**A quick note on fixed point:** Inputs, weights, and outputs use signed **8-bit Q3.5** values. The stored integer is 32 times the real value: `32` means `1.0`, `16` means `0.5`, and `−32` means `−1.0`. Multiplication produces a Q6.10 value. **The provided neuron code handles the bias scaling and sigmoid ROM address conversion; you do not need to implement either operation.** Read their comments to understand what they do.
 
-The code above is an interface reminder, **not** a replacement for your implementation. Update the parameter-list punctuation when adding `SIGNED_MODE`.
+## 2. Your implementation tasks
 
-**Required behavior:**
+### Task 1 — Reuse and extend your MAC
 
-- **`SIGNED_MODE=0`:** original unsigned behavior for `W=8` and `W=16`; `8'hFF` means 255. Existing callers that omit `SIGNED_MODE` must still work.
-- **`SIGNED_MODE=1`:** signed two's-complement multiplication for `W=8`; `8'hFF` means −1 and `8'hE0` means −32.
-- Every rising edge with `enable=1` adds one full-width product. `enable=0` holds the result; synchronous active-high `reset` clears it and has priority.
-- Sign-extend the signed product or zero-extend the unsigned product into the **32-bit accumulator**. Overflow wraps modulo 2³²; no saturation.
+Copy **your own** Assignment 2 `mac_core.sv` into this folder, beside `Neuron.v`. Keep your earlier assignment file unchanged.
 
-**Hint:** interpret operands as signed *before multiplication*. Making only the accumulator signed is insufficient. Preserve your original single-cycle MAC update.
+Add an integer parameter **`SIGNED_MODE` (default `0`)** while preserving the original module ports, parameters `W` and `ACC_W`, and clock behavior:
 
-**Test the MAC before continuing:**
+- `SIGNED_MODE=0`: keep the original **unsigned** multiplication for 8-bit and 16-bit MACs.
+- `SIGNED_MODE=1`: support **signed two's-complement** 8-bit multiplication. For example, `8'hE0` represents `−32`, not `224`.
+- With `enable=1`, accumulate one product on each rising edge. With `enable=0`, hold the accumulator. Synchronous `reset` clears it and has priority.
+- Extend signed products with their **sign bit**, not zeros, before accumulating into 32 bits.
+
+**Hint:** Both operands must be treated as signed when multiplied. Simply declaring the accumulator signed does not change the meaning of the operands. See `MAC_IMPORT_INSTRUCTIONS.txt`.
+
+### Task 2 — Connect the MAC inside the neuron
+
+In `Neuron.v`, complete **TODO 2A–2D** on the `mac_core` instance:
+
+- Connect MAC `reset` to the provided clear signal.
+- Connect MAC `enable` to the provided step signal.
+- Connect operand `a` to the selected registered input.
+- Connect operand `b` to the weight memory output.
+
+**Do not** implement another multiplier or accumulator inside `Neuron.v`. The provided FSM, bias calculation, and sigmoid lookup logic are already complete.
+
+### Task 3 — Connect the 2–2–1 network
+
+In `Tiny_NN.v`, complete **TODO 5A–5C**: connect the output neuron's **start signal** and its **two input ports** to the provided hidden-layer signals.
+
+The two hidden neurons run in parallel. When both results become valid, the network controller starts the output neuron. Its result is reported with a `done` pulse.
+
+## 3. Simulate and check your work
+
+Run commands from the **top-level assignment directory** so the `.mem` files can be found.
+
+**First, test your MAC:**
 
 ```bash
 vlib work
@@ -70,181 +82,62 @@ vlog -sv mac_core.sv tb/tb_mac_reuse.sv
 vsim -c work.tb_mac_reuse -do "run -all; quit -f"
 ```
 
-All three configurations (unsigned 8-bit, unsigned 16-bit, signed 8-bit) must pass. The testbench also checks reset, enable-hold, accumulation, negative products, and unsigned overflow. Add one signed edge case and explain its expected result in your report.
+The testbench checks **unsigned W=8**, **unsigned W=16**, and **signed W=8** behavior, including reset, accumulation, and enable. All should pass.
 
-## 3. Understand the fixed-point format
-
-Inputs, weights, biases, and sigmoid outputs are signed **8-bit Q3.5** numbers: five fractional bits, so each stored integer represents its value divided by 32.
-
-$$
-\text{Real value} = \frac{\text{signed raw value}}{32}
-$$
-
-| Real value | Raw integer | Hex |
-|---:|---:|---:|
-| +2.00 | +64 | `40` |
-| +1.00 | +32 | `20` |
-| +0.50 | +16 | `10` |
-| +0.25 | +8 | `08` |
-| 0.00 | 0 | `00` |
-| −0.25 | −8 | `F8` |
-| −1.00 | −32 | `E0` |
-| −2.00 | −64 | `C0` |
-
-Multiplying two Q3.5 numbers produces **Q6.10**, with ten fractional bits. The MAC accumulates raw signed products in 32 bits:
-
-$$
-S_{\mathrm{raw}} = x_{0,\mathrm{raw}}w_{0,\mathrm{raw}} + x_{1,\mathrm{raw}}w_{1,\mathrm{raw}}
-$$
-
-Before adding the signed **Q3.5 bias**, sign-extend it and shift it **left by five bits** to match Q6.10.
-
-A neuron computes:
-
-$$
- z=x_0w_0+x_1w_1+b,\qquad y=\sigma(z)=\frac{1}{1+e^{-z}}
-$$
-
-The provided **32-entry sigmoid ROM** approximates outputs for inputs from **−4.00 to +3.75**, spaced by 0.25. Convert the biased Q6.10 sum to a signed **quarter-step index**: `0` represents 0.00, `4` represents +1.00, `-4` represents −1.00. Use arithmetic right shifting (round toward negative infinity), and clamp the index to **−16 through +15**. The output is quantized Q3.5, not an exact real-number sigmoid.
-
-**Example:** `x0=+1.0`, `x1=+0.5`, weights `+1.0` and `−1.0`, bias `+0.25` give `z=+0.75`. The ROM returns raw **22**, or **0.6875**.
-
-For a negative-product check, `8'hE0` is raw **−32** (−1.0) and `8'h10` is raw **+16** (+0.5). Their signed product is raw **−512** in Q6.10, or −0.5 in real units. The resulting product must be sign-extended, not padded with zeros, when added to the 32-bit accumulator. Use this reasoning when answering Question 2.
-
-## 4. Complete the neuron (TODO 2–4)
-
-Open `Neuron.v`. Its controller moves through:
-
-```text
-IDLE -> READ0 -> MAC0 -> READ1 -> MAC1 -> ADD_BIAS -> LOOKUP -> DONE
-```
-
-At `IDLE`, it captures inputs and clears the MAC. `READ0/READ1` fetch weights from synchronous memory; `MAC0/MAC1` perform one MAC update each.
-
-1. **TODO 2A–2D:** wire the supplied `mac_core` instance to clock, control, selected registered input, weight, and accumulator result. It is already parameterized for `W=8`, `ACC_W=32`, `SIGNED_MODE=1`.
-2. **TODO 3:** after `MAC1`, register **MAC result + scaled bias** exactly once in `biased_sum_q610`.
-3. **TODO 4:** form the signed, clamped quarter-step address for `Sig_ROM`.
-
-The MAC completes its second update on the `MAC1` edge; `ADD_BIAS` reads that registered result on the following edge. The ROM samples its address in `LOOKUP`, and `DONE` produces `out` plus a one-cycle `outvalid` pulse. **Do not** place a second multiplier in `Neuron.v`, add bias every cycle, or replace sigmoid with ReLU.
-
-**Think in clock edges:** a synchronous ROM does not instantly produce a newly requested weight in the same edge that requests it. Similarly, the registered MAC result is updated at a clock edge, so downstream logic should read it in a later state. Trace the state and operand signals in a waveform if you see an off-by-one result.
-
-## 5. Connect the 2–2–1 network (TODO 5)
-
-In `Tiny_NN.v`, two hidden neurons process the same inputs **in parallel**. The output neuron consumes their quantized results once both are valid. Complete **TODO 5A–5C** by connecting its `start`, `in0`, and `in1` ports to the supplied control/results signals.
-
-| Neuron | Weight 0 | Weight 1 | Bias |
-|---|---:|---:|---:|
-| Hidden 0 | +1.00 | −1.00 | +0.25 |
-| Hidden 1 | −1.00 | +1.00 | −0.25 |
-| Output | +2.00 | −2.00 | −0.25 |
-
-The intended functions are:
-
-$$
-\begin{aligned}
-h_0 &= \sigma(x_0-x_1+0.25) \\
-h_1 &= \sigma(-x_0+x_1-0.25) \\
-y   &= \sigma(2h_0-2h_1-0.25)
-\end{aligned}
-$$
-
-**Important:** use the **quantized Q3.5** hidden outputs when calculating expected network values; don't assume ideal mathematical sigmoid results. The `outvalid` and final `done` signals each pulse for one clock.
-
-## 6. Simulate and verify
-
-Run from the **assignment root** so `$readmemh` finds `sigContent.mem` and `weights/*.mem`.
-
-**Questa / ModelSim:**
+**Next, test the neuron and network:**
 
 ```bash
-vlib work  # omit if your work library already exists
 vlog -sv +incdir+. mac_core.sv Neuron.v Weight_Memory.v Sig_ROM.v Tiny_NN.v \
     tb/tb_neuron.v tb/tb_tiny_nn.v
 vsim -c work.tb_neuron -do "run -all; quit -f"
 vsim -c work.tb_tiny_nn -do "run -all; quit -f"
 ```
 
-Run `tb_mac_reuse` separately using Section 2. The testbenches print PASS/FAIL and include timeouts.
+The provided testbenches check known input/output pairs. **Add one extra `check_case` to each of `tb/tb_neuron.v` and `tb/tb_tiny_nn.v`.** Suggested inputs and expected outputs appear in the comments of each file; you do not need to calculate a new sigmoid table.
 
-**Required evidence:**
+Submit PASS output for all three tests, plus **one waveform or labeled transcript** showing the MAC operations and the transition from hidden neurons to the output neuron. If values are unknown, check that you are running from the assignment root and that the `.mem` files are present.
 
-- **MAC:** all three modes PASS, with your additional signed edge case.
-- **Neuron:** original checks plus two added cases (at least one negative input). Show `mac_clear`, `mac_step`, `mac_sum_q610`, `biased_sum_q610`, `lut_code`, and `outvalid` in a waveform or transcript.
-- **Network:** original checks plus two added cases and an active-inference reset test. Demonstrate hidden-result handoff and final `done` pulse.
+> The starter intentionally has missing MAC connections and **does not include `mac_core.sv`**. Tests will not compile or pass until you import and finish your own implementation.
 
-A testbench compiling successfully does **not** mean it passes. Fix functional failures before running Quartus.
+## 4. Compile with Quartus
 
-**Optional alternative — Icarus Verilog:**
-
-```bash
-iverilog -g2012 -I . -s tb_mac_reuse -o mac_sim \
-    mac_core.sv tb/tb_mac_reuse.sv
-vvp mac_sim
-iverilog -g2012 -I . -s tb_neuron -o neuron_sim \
-    mac_core.sv Neuron.v Weight_Memory.v Sig_ROM.v Tiny_NN.v tb/tb_neuron.v
-vvp neuron_sim
-iverilog -g2012 -I . -s tb_tiny_nn -o network_sim \
-    mac_core.sv Neuron.v Weight_Memory.v Sig_ROM.v Tiny_NN.v tb/tb_tiny_nn.v
-vvp network_sim
-```
-
-**Troubleshooting:** If a module is missing, confirm that `mac_core.sv` is in the assignment root and the names/ports match. If ROM values appear unknown, run from the root directory and verify the `.mem` paths. If your output is one clock late, review synchronous ROM and nonblocking-assignment timing. If sigmoid is always the same value, inspect the signed `lut_code` conversion and clamp logic.
-
-## 7. Compile and analyze timing in Quartus
-
-The supplied project has **`Tiny_NN`** as top-level, targets MAX 10 `10M50DAF484C7G`, and constrains top-level `clk` (`core_clk`) to **20 ns / 50 MHz**. It references your imported `mac_core.sv`. No pin assignments are included: **this is not a physical board demo**.
+The provided Quartus project uses **`Tiny_NN`** as the top-level entity and has a **20 ns constraint on `clk`** (named `core_clk`). Compile with:
 
 ```bash
 quartus_sh --flow compile Neuron
 ```
 
-Or open `Neuron.qpf` and choose **Processing → Start Compilation**. Record values from your own reports:
+You can also open `Neuron.qpf` in Quartus and select **Processing → Start Compilation**.
 
-| Measurement | Result |
+Record the following from the reports:
+
+| Measurement | Your result |
 |---|---|
-| Compilation success; compilation time; significant warnings | |
-| Target family/device; clock period | MAX 10 / `10M50DAF484C7G`; 20 ns |
-| Core-clock Fmax (MHz) and worst setup slack (ns), if reported | |
-| Did the design meet 50 MHz? | |
+| Compilation successful? | |
 | Logic resources and registers | |
-| DSP/multiplier resources; ROM/memory usage | |
+| DSP/multiplier and memory resources | |
+| Core-clock Fmax, if reported | |
+| Does the implementation meet **50 MHz**? | |
 
-Report `N/A` and explain missing fields. Use the **user/core clock**, not JTAG/TCK. Totals may cover the whole network, ROM, and controllers. Quartus compilation is evidence of implementation/timing analysis, **not physical board execution**.
+Check the **core/user clock timing**, not the JTAG clock. If any field is unavailable, write `N/A` and explain. Compilation and timing analysis **do not mean the board was programmed**.
 
-When evaluating the 50 MHz requirement, check the setup timing analysis for the specified clock and any unconstrained paths or warnings. A positive Fmax margin alone does not replace checking whether relevant timing paths were constrained. Include enough report evidence for someone else to locate your measurements.
+## 5. Short report — answer these five questions
 
-## 8. Report questions
+1. What does your MAC do inside the neuron? How did you support signed operands without breaking its original unsigned behavior?
+2. Why does a neuron use **weights, bias, and sigmoid activation**? Which parts are provided and which did you connect?
+3. How does the provided FSM control weight reads and MAC operations? Why can't both weights be processed in the same clock with this single MAC?
+4. How are the three neurons connected? How does the output neuron know when the hidden neurons finish?
+5. What logic, register, DSP, and **core Fmax** results did Quartus report? Did the network meet the 50 MHz target?
 
-Answer briefly, using calculations or measured results where appropriate.
+Your report should also include a simple **2–2–1 network block diagram** and your measured Quartus results. You do **not** need hand calculations of ROM addresses or fixed-point bias shifts.
 
-1. How did you add signed support to the old MAC while preserving its unsigned operation? What tests confirm this?
-2. For `a=8'hE0` and `b=8'h10`, find their signed raw values, 16-bit product, Q6.10 real product, and 32-bit extension.
-3. Why are `READ0`, `MAC0`, `READ1`, and `MAC1` separate FSM states with synchronous weight memory?
-4. Why must the MAC be reset for each new inference?
-5. Why must the Q3.5 bias be shifted before adding to Q6.10? Give an example.
-6. Why use a sigmoid ROM? Explain quarter-step indexing and clamping.
-7. How do the hidden neurons start the output neuron? Why are `outvalid` and `done` needed?
-8. What logic, registers, DSP resources, and **core** Fmax does Quartus report? Does the network meet 50 MHz, and what can the report prove?
-9. How might additional parallel MACs affect hardware cost, latency, and throughput?
-10. **Bridge to Part 2:** How is instantiating more hardware MACs different from increasing inference requests (`nireq`) on the prebuilt Agilex 7 accelerator?
+## 6. Submit through GitHub
 
-## 9. Submit to GitHub
+Push to your assigned individual submission directory:
 
-Push to your assigned individual repository directory:
+- Your **modified `mac_core.sv`**, completed `Neuron.v` and `Tiny_NN.v`, plus the supplied support and memory files.
+- The MAC, neuron, and network testbenches, including your **one new case in each** of the neuron and network tests.
+- PASS results, a waveform/transcript, and Quartus resource/timing evidence.
+- A **short PDF report** with the five answers, diagram, and timing/resource results.
 
-- Modified **`mac_core.sv`**, completed **`Neuron.v`** and **`Tiny_NN.v`**, and required support files.
-- Enhanced neuron/network testbenches and MAC compatibility testbench.
-- PASS evidence for all three testbenches, plus a neuron-stage/network-handoff waveform or labeled transcript.
-- Quartus compilation, utilization, and core-clock timing reports.
-- A concise **PDF report** with the Section 7 table, answers to all ten questions, one hand-worked fixed-point example, and a 2–2–1 network block diagram.
-
-**Do not submit credentials, tokens, private keys, or passwords. Do not upload an `.sof` for Part 1.**
-
-### Final checklist
-
-- [ ] Own Assignment 2 MAC imported; original backed up; signed mode added without breaking unsigned mode.
-- [ ] Neuron MAC, bias, and sigmoid TODOs completed; three-neuron network connected.
-- [ ] All tests PASS, including added cases and reset-during-operation.
-- [ ] MAX 10 compilation and **core-clock** timing/resource results recorded.
-- [ ] RTL, evidence, and PDF report committed to GitHub; no credentials included.
+**Do not include cloud tokens, passwords, private keys, or an `.sof` file.**
