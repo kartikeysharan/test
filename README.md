@@ -54,7 +54,7 @@ vsim -c work.tb_neuron -do "run -all; quit -f"
 vsim -c work.tb_tiny_nn -do "run -all; quit -f"
 ```
 
-The MAC test checks older unsigned configurations and signed operation. The neuron and network tests check the complete design.
+The MAC test checks older unsigned configurations and signed operations. The neuron and network tests check the complete design.
 
 For Quartus:
 
@@ -76,4 +76,4 @@ Include a 2–2–1 block diagram, test results, one useful waveform, and a smal
 
 ## Submission
 
-Push the **completed starter project** to your assigned GitHub directory, including your adapted MAC, the neuron/network files, the modules and memory files, the testbenches, simulation evidence, Quartus reports, and your **short PDF report**.
+Push the **complete project** to your assigned GitHub directory, including your adapted MAC, the neuron/network files, the modules and memory files, the testbenches, simulation evidence, Quartus reports, and your **short PDF report**.
