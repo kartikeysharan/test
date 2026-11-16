@@ -1,6 +1,5 @@
 # Part 1 — From Your MAC to a Hardware Neural Network
-
-**Digital Logic II · Individual assignment · Approximately 4–6 hours**  
+  
 **Target:** DE10-Lite MAX 10 (`10M50DAF484C7G`) · 50 MHz constraint  
 **Tools:** SystemVerilog simulator and Quartus Prime Lite
 
